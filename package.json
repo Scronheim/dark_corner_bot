@@ -1,0 +1,17 @@
+{
+  "name": "dark_corner_bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon ./index.mjs"
+  },
+  "type": "module",
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "axios": "1.7.9",
+    "node-7z": "^3.0.0",
+    "telegraf": "^4.16.3"
+  }
+}
