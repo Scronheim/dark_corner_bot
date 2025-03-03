@@ -1,6 +1,5 @@
 import fs from 'fs'
-import { Telegraf, Markup, Input } from 'telegraf'
-import { message } from 'telegraf/filters'
+import { Telegraf } from 'telegraf'
 import axios from 'axios'
 import Seven from 'node-7z'
 import { createExtractorFromFile } from 'node-unrar-js'
@@ -8,7 +7,16 @@ import { createExtractorFromFile } from 'node-unrar-js'
 const MUSIC_PATH = '/srv/music'
 const API_URL = process.env.API_URL
 const API_KEY = process.env.API_KEY
-const WEB_URL = 'http://150.241.105.187:9180/#/library'
+const WEB_URL = 'http://150.241.105.187:32400/web/index.html#!/server/2f5e25f41be9faf84718898e3b35e46a0df60d89'
+
+const xhr = axios.create({
+  baseURL: API_URL,
+  method: 'GET',
+  params: {'X-Plex-Token': process.env.PLEX_TOKEN},
+  headers: {
+    Accept: 'application/json'
+  }
+})
 
 class Bot {
   constructor(token) {
@@ -26,27 +34,37 @@ class Bot {
   }
 
   #registerCommands = () => {
-    this.bot.command('post', this.#postLastAlbum)
+    this.bot.command('last', this.#getLastNAlbums)
+    this.bot.command('post', this.#getAlbumById)
     // this.bot.on(message('text'), this.#parseInput)
   }
 
-  #postLastAlbum = async (ctx) => {
+  #getAlbumById = async (ctx) => {
+    const response = await xhr.get(`/library/metadata/${ctx.payload}`)
+    this.#postAlbums(ctx, response.data.MediaContainer.Metadata)
+  }
+
+  #getLastNAlbums = async (ctx) => {
     const limit = ctx.payload ? ctx.payload : 1
-    const response = await axios.get(`${API_URL}/Users/9524e6d89ca3462ab0c835fe742a41ba/Items/Latest?limit=${limit}&api_key=${API_KEY}`)
-    for (const album of response.data) {
-      const latestItemId = album.Id
-      const { data } = await axios.get(`${API_URL}/Users/9524e6d89ca3462ab0c835fe742a41ba/Items/${latestItemId}?api_key=${API_KEY}`)
+    const response = await xhr.get(`/library/recentlyAdded?limit=${limit}`)
+    this.#postAlbums(ctx, response.data.MediaContainer.Metadata)
+  }
+
+  #postAlbums = async (ctx, albums) => {
+    for (const album of albums) {
+      const artistInfo = await xhr.get(`/library/sections/1/all?title=${album.parentTitle}`)
       const albumInfo = {
-        artist: data.AlbumArtist,
-        artistId: data.ParentId,
-        album: data.Name,
-        year: data.ProductionYear,
-        genres: data.Genres,
-        coverUrl: `${API_URL}/Items/${data.Id}/Images/Primary`,
-        albumUrl: `${WEB_URL}/albums/${latestItemId}`
+        artist: album.parentTitle,
+        artistCountry: artistInfo.data.MediaContainer.Metadata[0].Country[0].tag,
+        album: album.title,
+        year: album.year,
+        genres: album.Genre,
+        parentKey: album.parentKey,
+        artistUrl: `${WEB_URL}/details?key=/library/metadata/${album.parentRatingKey}`,
+        albumUrl: `${WEB_URL}/details?key=/library/metadata/${album.ratingKey}`,
+        coverUrl: `${API_URL}${album.thumb}?X-Plex-Token=${process.env.PLEX_TOKEN}`,
       }
       await this.#postToChannel(ctx, albumInfo)
-      await this.#sleep(1)
     }
   }
 
@@ -146,13 +164,12 @@ class Bot {
   }
 
   #postToChannel = async (ctx, albumInfo) => {
-    ctx.telegram.sendPhoto('@dark_corner_ru', {url: albumInfo.coverUrl}, {caption: // 423754317
+    ctx.telegram.sendPhoto('423754317', {url: albumInfo.coverUrl}, {caption: // 423754317
 `
-<a href="${WEB_URL}/album-artists/${albumInfo.artistId}">${albumInfo.artist}</a> - ${albumInfo.album} (${albumInfo.year})
+<a href="${albumInfo.artistUrl}">${albumInfo.artist}</a> - <a href="${albumInfo.albumUrl}">${albumInfo.album}</a> (${albumInfo.year})
 
-${albumInfo.genres.join(' / ')}
-
-<a href="${albumInfo.albumUrl}">Ссылка на альбом</a>
+Genres: ${albumInfo.genres.map(g => g.tag).join(' / ')}
+Country: ${albumInfo.artistCountry}
 `,
     parse_mode: 'HTML'})
   }
