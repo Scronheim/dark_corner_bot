@@ -76,7 +76,7 @@ class Bot {
           year: a.year,
           genre: a.Genre.map(g => g.tag),
           url: `${WEB_URL}/details?key=/library/metadata/${a.ratingKey}`,
-          type: a.title.includes('EP') ? ALBUM_TYPES.EP : (a.title.includes('Single')) ? ALBUM_TYPES.Single : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo : ALBUM_TYPES['Full-Lenght']
+          type: a.title.includes('EP') ? ALBUM_TYPES.EP : (a.title.includes('Single')) ? ALBUM_TYPES.Single : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo : (a.title.includes('Remix')) ? ALBUM_TYPES.Remixes : ALBUM_TYPES['Full-Lenght']
         }
       })
     }
@@ -185,6 +185,7 @@ class Bot {
     const epAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.EP)
     const singlesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Single)
     const demoAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Demo)
+    const remixesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Remixes)
 
     let caption =
 `
@@ -215,7 +216,16 @@ ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
 ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
-    ctx.telegram.sendPhoto('423754317', {url: discography.artistThumbUrl}, {caption, parse_mode: 'HTML'}) // 423754317   @dark_corner_ru
+    if (remixesAlbums.length) caption +=
+`
+Ремиксы: ${remixesAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+    caption +=
+`
+#discography`
+    ctx.telegram.sendPhoto('@dark_corner_ru', {url: discography.artistThumbUrl}, {caption, parse_mode: 'HTML'}) // 423754317   @dark_corner_ru
   }
 
   #postAlbumToChannel = async (ctx, albumInfo) => {
