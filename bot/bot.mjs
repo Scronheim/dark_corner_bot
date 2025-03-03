@@ -1,8 +1,12 @@
 import fs from 'fs'
+import { readdir } from 'fs/promises'
 import { Telegraf } from 'telegraf'
+import { message } from 'telegraf/filters'
 import axios from 'axios'
 import Seven from 'node-7z'
 import { createExtractorFromFile } from 'node-unrar-js'
+
+import { ALBUM_TYPES } from './consts.mjs'
 
 const MUSIC_PATH = '/srv/music'
 const API_URL = process.env.API_URL
@@ -36,21 +40,50 @@ class Bot {
   #registerCommands = () => {
     this.bot.command('last', this.#getLastNAlbums)
     this.bot.command('post', this.#getAlbumById)
-    // this.bot.on(message('text'), this.#parseInput)
+    this.bot.command('discography', this.#getDiscographyById)
+    this.bot.on(message('text'), this.#parseInput)
+  }
+
+  #getDiscographyById = async (ctx) => {
+    const artistResponse = (await xhr.get(`/library/metadata/${ctx.payload}`)).data
+    const albumsResponse = (await xhr.get(`/library/metadata/${ctx.payload}/children`)).data
+    const artist = artistResponse.MediaContainer.Metadata[0]
+    const albums = albumsResponse.MediaContainer.Metadata
+    await this.#prepareDiscography(ctx, artist, albums)
   }
 
   #getAlbumById = async (ctx) => {
     const response = await xhr.get(`/library/metadata/${ctx.payload}`)
-    this.#postAlbums(ctx, response.data.MediaContainer.Metadata)
+    this.#prepareAlbums(ctx, response.data.MediaContainer.Metadata)
   }
 
   #getLastNAlbums = async (ctx) => {
     const limit = ctx.payload ? ctx.payload : 1
     const response = await xhr.get(`/library/recentlyAdded?limit=${limit}`)
-    this.#postAlbums(ctx, response.data.MediaContainer.Metadata)
+    this.#prepareAlbums(ctx, response.data.MediaContainer.Metadata)
   }
 
-  #postAlbums = async (ctx, albums) => {
+  #prepareDiscography = async (ctx, artist, albums) => {
+    const discography = {
+      artist: artist.title,
+      artistGenre: artist.Genre.map(g => g.tag),
+      country: artist.Country[0].tag,
+      artistUrl: `${WEB_URL}/details?key=/library/metadata/${artist.ratingKey}`,
+      artistThumbUrl: `${API_URL}${artist.thumb}?X-Plex-Token=${process.env.PLEX_TOKEN}`,
+      albums: albums.map(a => {
+        return {
+          title: a.title,
+          year: a.year,
+          genre: a.Genre.map(g => g.tag),
+          url: `${WEB_URL}/details?key=/library/metadata/${a.ratingKey}`,
+          type: a.title.includes('EP') ? ALBUM_TYPES.EP : (a.title.includes('Single')) ? ALBUM_TYPES.Single : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo : ALBUM_TYPES['Full-Lenght']
+        }
+      })
+    }
+    await this.#postDiscographyToChannel(ctx, discography)
+  }
+
+  #prepareAlbums = async (ctx, albums) => {
     for (const album of albums) {
       const artistInfo = await xhr.get(`/library/sections/1/all?title=${album.parentTitle}`)
       const albumInfo = {
@@ -64,24 +97,18 @@ class Bot {
         albumUrl: `${WEB_URL}/details?key=/library/metadata/${album.ratingKey}`,
         coverUrl: `${API_URL}${album.thumb}?X-Plex-Token=${process.env.PLEX_TOKEN}`,
       }
-      await this.#postToChannel(ctx, albumInfo)
+      await this.#postAlbumToChannel(ctx, albumInfo)
     }
   }
 
   #parseInput = async (ctx) => {
+    // грузим архив напрямую, формат artist__download url
     const splittedInput = ctx.update.message.text.split('__')
     const firstArgument = splittedInput[0]
     const secondArgument = splittedInput[1]
-     try {
-      const parsingUrl = new URL(firstArgument)
-      console.log(parsingUrl)
-      // выкладываем пост
-     } catch (_) {
-      // грузим файл на сервак, формат artist__downloadUrl
-      this.#checkArtistExist(firstArgument)
-      const filepath = await this.#downloadFile(firstArgument, secondArgument)
-      this.#unpack(ctx, filepath, `${MUSIC_PATH}/${firstArgument}`)
-     }
+    this.#checkArtistExist(firstArgument)
+    const filepath = await this.#downloadFile(firstArgument, secondArgument)
+    this.#unpack(ctx, filepath, `${MUSIC_PATH}/${firstArgument}`)
   }
 
   #checkArtistExist = (artist) => {
@@ -120,22 +147,19 @@ class Bot {
       case 'tar':
         const myStream = Seven.extractFull(filepath, outputPath)
         myStream.on('end', async () => {
-          await this.#unpackComplete(ctx, filepath)
+          await this.#unpackComplete(ctx, filepath, outputPath)
         })
         break
       case 'rar':
         try {
-          // Create the extractor with the file information (returns a promise)
           const extractor = await createExtractorFromFile({
             filepath,
             targetPath: outputPath
           });
       
-          // Extract the files
           [...extractor.extract().files]
-          this.#unpackComplete(ctx, filepath)
+          this.#unpackComplete(ctx, filepath, outputPath)
         } catch (err) {
-          // May throw UnrarError, see docs
           console.error(err)
         }
         break
@@ -144,26 +168,57 @@ class Bot {
     }
   }
 
-  #unpackComplete = async (ctx, filepath) => {
+  #unpackComplete = async (ctx, filepath, outputPath) => {
+    const dirs = await this.#listDirectories(outputPath)
+    for (const dir of dirs) {
+      fs.chmodSync(`${outputPath}/${dir}`, 0o755)
+    }
     fs.unlinkSync(filepath)
     ctx.reply('Файл скачан и распакован')
-    await axios.post(`${API_URL}/Library/Refresh?api_key=${API_KEY}`)
-    await this.#sleep(5)
-    const response = await axios.get(`${API_URL}/Users/9524e6d89ca3462ab0c835fe742a41ba/Items/Latest?limit=1&api_key=${API_KEY}`)
-    const latestItemId = response.data[0].Id
-    const { data } = await axios.get(`${API_URL}/Users/9524e6d89ca3462ab0c835fe742a41ba/Items/${latestItemId}?api_key=${API_KEY}`)
-    const albumInfo = {
-      artist: data.AlbumArtist,
-      album: data.Name,
-      year: data.ProductionYear,
-      genres: data.Genres,
-      coverUrl: `${API_URL}/Items/${data.Id}/Images/Primary`,
-      albumUrl: `${API_URL}/web/#/details?id=${latestItemId}`
-    }
-    await this.#postToChannel(ctx, albumInfo)
+    await xhr.get(`${API_URL}/library/sections/1/refresh`)
+    // await this.#sleep(10)
+    // await this.#getLastNAlbums(ctx)
   }
 
-  #postToChannel = async (ctx, albumInfo) => {
+  #postDiscographyToChannel = async (ctx, discography) => {
+    const fullLenghtAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES['Full-Lenght'])
+    const epAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.EP)
+    const singlesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Single)
+    const demoAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Demo)
+
+    let caption =
+`
+<a href="${discography.artistUrl}">${discography.artist}</a> - ${discography.artistGenre.join(' / ')} (${discography.country})
+`
+    if (fullLenghtAlbums.length) caption += 
+`
+Полноформатники: ${fullLenghtAlbums.map((a, index) => 
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+    if (epAlbums.length) caption +=
+`
+EP: ${epAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+    if (singlesAlbums.length) caption +=
+`
+Синглы: ${singlesAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+
+    if (demoAlbums.length) caption +=
+`
+Демо: ${demoAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+    ctx.telegram.sendPhoto('423754317', {url: discography.artistThumbUrl}, {caption, parse_mode: 'HTML'}) // 423754317   @dark_corner_ru
+  }
+
+  #postAlbumToChannel = async (ctx, albumInfo) => {
     ctx.telegram.sendPhoto('@dark_corner_ru', {url: albumInfo.coverUrl}, {caption: // 423754317   @dark_corner_ru
 `
 <a href="${albumInfo.artistUrl}">${albumInfo.artist}</a> - <a href="${albumInfo.albumUrl}">${albumInfo.album}</a> (${albumInfo.year})
@@ -181,7 +236,15 @@ class Bot {
   #sleep = async (seconds) => {
     return new Promise(resolve => {
       setTimeout(resolve, seconds * 1000);
-  });
+    });
+  }
+
+  #listDirectories = async (pth) => {
+    const directories = (await readdir(pth, {withFileTypes: true}))
+      .filter(dirent => dirent.isDirectory())
+      .map(dir => dir.name)
+  
+    return directories
   }
 }
 
