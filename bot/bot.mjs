@@ -164,12 +164,12 @@ class Bot {
   }
 
   #postToChannel = async (ctx, albumInfo) => {
-    ctx.telegram.sendPhoto('423754317', {url: albumInfo.coverUrl}, {caption: // 423754317
+    ctx.telegram.sendPhoto('@dark_corner_ru', {url: albumInfo.coverUrl}, {caption: // 423754317   @dark_corner_ru
 `
 <a href="${albumInfo.artistUrl}">${albumInfo.artist}</a> - <a href="${albumInfo.albumUrl}">${albumInfo.album}</a> (${albumInfo.year})
 
-Genres: ${albumInfo.genres.map(g => g.tag).join(' / ')}
-Country: ${albumInfo.artistCountry}
+Жанр(ы): ${albumInfo.genres.map(g => g.tag).join(' / ')}
+Страна: ${albumInfo.artistCountry}
 `,
     parse_mode: 'HTML'})
   }
