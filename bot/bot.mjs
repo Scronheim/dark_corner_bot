@@ -1,30 +1,33 @@
 import fs from 'fs'
 import { readdir } from 'fs/promises'
-import { Telegraf } from 'telegraf'
+import { Telegraf, Markup } from 'telegraf'
 import { message } from 'telegraf/filters'
 import axios from 'axios'
 import Seven from 'node-7z'
 import { createExtractorFromFile } from 'node-unrar-js'
+import _ from 'lodash'
+import dayjs from 'dayjs'
+import duration from 'dayjs/plugin/duration.js'
 
+import PlexApi from './plex.mjs'
 import { ALBUM_TYPES } from './consts.mjs'
+
+dayjs.extend(duration)
 
 const MUSIC_PATH = '/srv/music'
 const API_URL = process.env.API_URL
-const API_KEY = process.env.API_KEY
-const WEB_URL = 'http://150.241.105.187:32400/web/index.html#!/server/2f5e25f41be9faf84718898e3b35e46a0df60d89'
+const OUTER_API_URL = process.env.OUTER_API_URL
+const WEB_URL = 'https://dark-corner.ru/web/index.html#!/server/2f5e25f41be9faf84718898e3b35e46a0df60d89'
 
-const xhr = axios.create({
-  baseURL: API_URL,
-  method: 'GET',
-  params: {'X-Plex-Token': process.env.PLEX_TOKEN},
-  headers: {
-    Accept: 'application/json'
-  }
-})
 
 class Bot {
-  constructor(token) {
-    this.bot = new Telegraf(token)
+  constructor(botToken, plexToken) {
+    this.bot = new Telegraf(botToken, {
+      telegram: {
+        apiRoot: 'http://localhost:8081'
+      }}
+    )
+    this.plexApi = new PlexApi(plexToken)
   }
 
   runBot = async () => {
@@ -38,29 +41,146 @@ class Bot {
   }
 
   #registerCommands = () => {
+    this.bot.on('callback_query', this.#callbackQuery)
+
     this.bot.command('last', this.#getLastNAlbums)
     this.bot.command('post', this.#getAlbumById)
     this.bot.command('discography', this.#getDiscographyById)
+    this.bot.command('s', this.#searchArtist)
+
     this.bot.on(message('text'), this.#parseInput)
   }
 
+  #callbackQuery = async (ctx) => {
+    const [command, firstArgument, secondArgument] = ctx.callbackQuery.data.split('|')
+    switch (command) {
+      case 'artistById':
+        await this.#searchById(ctx, firstArgument)
+        break
+      case 'albumById':
+        await this.#searchById(ctx, firstArgument)
+        break
+      case 'downloadArchive':
+        await this.#downloadArchiveFromServer(ctx, firstArgument, true)
+        break
+      case 'downloadSong':
+        await this.#downloadArchiveFromServer(ctx, firstArgument, false)
+        break
+    }
+    await ctx.answerCbQuery()
+  }
+
+  #downloadArchiveFromServer = async (ctx, id, byArchive = true) => {
+    const albumTracks = await this.plexApi.getIdChildren(id)
+    if (byArchive) {
+      const folderPath = `${albumTracks[0].Media[0].Part[0].file.replace('/data/', '/srv/music/').split('/').slice(0, -1).join('/')}`
+      const archivePath = `${folderPath}/${albumTracks[0].grandparentTitle} - ${albumTracks[0].parentTitle}.7z`
+      await ctx.reply('Подготавливается архив для скачивания')
+      const archive = Seven.add(archivePath, folderPath, {recursive: true})
+      archive.on('end', async () => {
+        await ctx.replyWithDocument({source: archivePath, filename: `${albumTracks[0].grandparentTitle} - ${albumTracks[0].parentTitle}.7z`})
+        fs.unlinkSync(archivePath)
+      })
+    } else {
+      const mediaGroup = _.chunk(albumTracks.flatMap(track => {
+        return track.Media.flatMap(media => {
+          return media.Part.flatMap(part => {
+            return {
+              type: 'audio',
+              media: {source: part.file.replace('/data/', '/srv/music/')},
+              // caption: track.title
+            }
+          })
+        })
+      }), 10)
+      for (const group of mediaGroup) {
+        await ctx.replyWithMediaGroup(group)
+      }
+    }
+  }
+
+  #replyWithAlbum = async (ctx, album) => {
+    const albumTracks = await this.plexApi.getIdChildren(album.ratingKey)
+    const tracklist = albumTracks.flatMap(track => {
+      return {index: track.index, title: track.title, duration: dayjs.duration(track.duration).format('mm:ss')}
+    })
+    const inline_keyboard = [[
+      Markup.button.callback('Скачать архивом', `downloadArchive|${album.ratingKey}`),
+      Markup.button.callback('Скачать по трекам', `downloadSong|${album.ratingKey}`),
+    ]]
+    await ctx.replyWithPhoto(
+      {url: `${OUTER_API_URL}${album.thumb}?X-Plex-Token=${process.env.PLEX_TOKEN}`},
+      {caption: 
+`
+Группа: ${album.parentTitle}
+Альбом: ${album.title}
+Год: ${album.year}
+Жанр(ы): ${album.Genre.map(g => g.tag).join(' / ')}
+
+Треклист:${tracklist.map(track => 
+`
+${track.index}. ${track.title} (${track.duration})`
+).join('')}`, parse_mode: 'HTML', reply_markup: {inline_keyboard}})
+  }
+
+  #replyWithArtist = async (ctx, artist) => {
+    const country = artist.Country[0].tag
+    const inline_keyboard = artist.albums.map((album) => {
+      return [
+        Markup.button.callback(`${album.title} (${album.year})`, `albumById|${album.ratingKey}`, false),
+      ]
+    })
+    await ctx.replyWithPhoto(
+      {url: `${OUTER_API_URL}${artist.thumb}?X-Plex-Token=${process.env.PLEX_TOKEN}`},
+      {caption: 
+`
+${artist.title} - ${artist.Genre.map(g => g.tag).join(' / ')} (${country})
+`, parse_mode: 'HTML', reply_markup: {inline_keyboard}})
+  }
+
+  #searchById = async (ctx, id) => {
+    const result = await this.plexApi.searchById(id)
+    if (result.type === 'artist') {
+      await this.#replyWithArtist(ctx, result)
+    } else if (result.type === 'album') {
+      await this.#replyWithAlbum(ctx, result)
+    }
+  }
+
+  #searchArtist = async (ctx) => {
+    const artists = await this.plexApi.search(ctx.payload)
+    if (artists.Metadata?.length) {
+      const inlineKeyboard = artists.Metadata.map((artist) => {
+        const country = artist.Country ? artist.Country[0].tag : 'Неизвестно'
+        return [
+          Markup.button.callback(`${artist.title} (${country})`, `artistById|${artist.ratingKey}`),
+        ]
+      })
+      await ctx.reply('Вот что нашлось',
+        Markup.inlineKeyboard(inlineKeyboard)
+      )
+    } else {
+      await ctx.reply('Ничего не найдено')
+    }
+  }
+
   #getDiscographyById = async (ctx) => {
-    const artistResponse = (await xhr.get(`/library/metadata/${ctx.payload}`)).data
-    const albumsResponse = (await xhr.get(`/library/metadata/${ctx.payload}/children`)).data
+    const artistResponse = await this.plexApi.searchById(ctx.payload)
+    const albumsResponse = await this.plexApi.getIdChildren(ctx.payload)
     const artist = artistResponse.MediaContainer.Metadata[0]
     const albums = albumsResponse.MediaContainer.Metadata
     await this.#prepareDiscography(ctx, artist, albums)
   }
 
   #getAlbumById = async (ctx) => {
-    const response = await xhr.get(`/library/metadata/${ctx.payload}`)
+    const response = await this.plexApi.searchById(ctx.payload)
     this.#prepareAlbums(ctx, response.data.MediaContainer.Metadata)
   }
 
   #getLastNAlbums = async (ctx) => {
     const limit = ctx.payload ? ctx.payload : 1
-    const response = await xhr.get(`/library/recentlyAdded?limit=${limit}`)
-    this.#prepareAlbums(ctx, response.data.MediaContainer.Metadata)
+    const response = await this.plexApi.getLastAlbums(limit)
+    this.#prepareAlbums(ctx, response)
   }
 
   #prepareDiscography = async (ctx, artist, albums) => {
@@ -76,7 +196,13 @@ class Bot {
           year: a.year,
           genre: a.Genre.map(g => g.tag),
           url: `${WEB_URL}/details?key=/library/metadata/${a.ratingKey}`,
-          type: a.title.includes('EP') ? ALBUM_TYPES.EP : (a.title.includes('Single')) ? ALBUM_TYPES.Single : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo : (a.title.includes('Remix')) ? ALBUM_TYPES.Remixes : ALBUM_TYPES['Full-Lenght']
+          type: a.title.includes('EP') ? ALBUM_TYPES.EP
+           : (a.title.includes('Single')) ? ALBUM_TYPES.Single
+           : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo 
+           : (a.title.includes('Live')) ? ALBUM_TYPES.Live
+           : (a.title.includes('Instrument')) ? ALBUM_TYPES.Instrumental
+           : (a.title.includes('Remix')) ? ALBUM_TYPES.Remixes
+           : ALBUM_TYPES['Full-Lenght']
         }
       })
     }
@@ -85,10 +211,10 @@ class Bot {
 
   #prepareAlbums = async (ctx, albums) => {
     for (const album of albums) {
-      const artistInfo = await xhr.get(`/library/sections/1/all?title=${album.parentTitle}`)
+      const artistInfo = await this.plexApi.searchByArtistTitle(album.parentTitle)
       const albumInfo = {
         artist: album.parentTitle,
-        artistCountry: artistInfo.data.MediaContainer.Metadata[0].Country[0].tag,
+        artistCountry: artistInfo.Country[0].tag,
         album: album.title,
         year: album.year,
         genres: album.Genre,
@@ -175,9 +301,7 @@ class Bot {
     }
     fs.unlinkSync(filepath)
     ctx.reply('Файл скачан и распакован')
-    await xhr.get(`${API_URL}/library/sections/1/refresh`)
-    // await this.#sleep(10)
-    // await this.#getLastNAlbums(ctx)
+    await this.plexApi.refreshLibrary()
   }
 
   #postDiscographyToChannel = async (ctx, discography) => {
@@ -185,7 +309,9 @@ class Bot {
     const epAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.EP)
     const singlesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Single)
     const demoAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Demo)
+    const liveAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Live)
     const remixesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Remixes)
+    const instrumentalAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Instrumental)
 
     let caption =
 `
@@ -216,9 +342,24 @@ ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
 ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
+
+    if (liveAlbums.length) caption +=
+`
+Live: ${liveAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+
     if (remixesAlbums.length) caption +=
 `
 Ремиксы: ${remixesAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+
+    if (instrumentalAlbums.length) caption +=
+`
+Инструментал: ${instrumentalAlbums.map((a, index) =>
 `
 ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
