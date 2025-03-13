@@ -6,4 +6,5 @@ export const ALBUM_TYPES = {
   Live: 5,
   Remixes: 6,
   Instrumental: 7,
+  Reissue: 8,
 }

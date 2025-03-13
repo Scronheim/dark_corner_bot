@@ -165,10 +165,8 @@ ${artist.title} - ${artist.Genre.map(g => g.tag).join(' / ')} (${country})
   }
 
   #getDiscographyById = async (ctx) => {
-    const artistResponse = await this.plexApi.searchById(ctx.payload)
-    const albumsResponse = await this.plexApi.getIdChildren(ctx.payload)
-    const artist = artistResponse.MediaContainer.Metadata[0]
-    const albums = albumsResponse.MediaContainer.Metadata
+    const artist = await this.plexApi.searchById(ctx.payload)
+    const albums = await this.plexApi.getIdChildren(ctx.payload)
     await this.#prepareDiscography(ctx, artist, albums)
   }
 
@@ -194,14 +192,14 @@ ${artist.title} - ${artist.Genre.map(g => g.tag).join(' / ')} (${country})
         return {
           title: a.title,
           year: a.year,
-          genre: a.Genre.map(g => g.tag),
           url: `${WEB_URL}/details?key=/library/metadata/${a.ratingKey}`,
           type: a.title.includes('EP') ? ALBUM_TYPES.EP
-           : (a.title.includes('Single')) ? ALBUM_TYPES.Single
-           : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo 
-           : (a.title.includes('Live')) ? ALBUM_TYPES.Live
+           : (a.title.includes('(Single)')) ? ALBUM_TYPES.Single
+           : (a.title.includes('(Demo)')) ? ALBUM_TYPES.Demo
+           : (a.title.includes('(Live)')) ? ALBUM_TYPES.Live
            : (a.title.includes('Instrument')) ? ALBUM_TYPES.Instrumental
            : (a.title.includes('Remix')) ? ALBUM_TYPES.Remixes
+           : (a.title.includes('Reissue')) ? ALBUM_TYPES.Reissue
            : ALBUM_TYPES['Full-Lenght']
         }
       })
@@ -312,6 +310,7 @@ ${artist.title} - ${artist.Genre.map(g => g.tag).join(' / ')} (${country})
     const liveAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Live)
     const remixesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Remixes)
     const instrumentalAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Instrumental)
+    const reissueAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Reissue)
 
     let caption =
 `
@@ -339,6 +338,13 @@ ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
     if (demoAlbums.length) caption +=
 `
 Демо: ${demoAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+
+    if (reissueAlbums.length) caption +=
+`
+Переиздания: ${reissueAlbums.map((a, index) =>
 `
 ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `

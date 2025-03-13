@@ -12,7 +12,6 @@ class PlexApi {
         Accept: 'application/json'
       }
     })
-    this.token = token
   }
 
   search = async (query) => {
