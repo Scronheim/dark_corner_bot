@@ -11,8 +11,10 @@
   "description": "",
   "dependencies": {
     "axios": "1.7.9",
+    "music-metadata": "^11.2.1",
     "node-7z": "^3.0.0",
     "node-unrar-js": "^2.0.2",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "telegraf-media-group": "^1.2.1"
   }
 }

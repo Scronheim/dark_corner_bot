@@ -1,17 +1,21 @@
 import fs from 'fs'
-import { readdir } from 'fs/promises'
+import { readdir, cp, unlink } from 'fs/promises'
 import { Telegraf } from 'telegraf'
-import { message } from 'telegraf/filters'
+import { message, anyOf } from 'telegraf/filters'
 import axios from 'axios'
 import Seven from 'node-7z'
 import { createExtractorFromFile } from 'node-unrar-js'
+import { parseFile } from 'music-metadata'
+import mediaGroup from 'telegraf-media-group'
 
 import { ALBUM_TYPES } from './consts.mjs'
 
-const MUSIC_PATH = '/srv/music'
+const MUSIC_PATH = '/mnt/data/music'
+const DOWNLOAD_DIR_PATH = '/mnt/data/deluge/downloads'
+
 const API_URL = process.env.API_URL
 const API_KEY = process.env.API_KEY
-const WEB_URL = 'http://150.241.105.187:32400/web/index.html#!/server/2f5e25f41be9faf84718898e3b35e46a0df60d89'
+const WEB_URL = 'https://dark-corner.ru/web/index.html#!/server/2f5e25f41be9faf84718898e3b35e46a0df60d89'
 
 const xhr = axios.create({
   baseURL: API_URL,
@@ -24,10 +28,15 @@ const xhr = axios.create({
 
 class Bot {
   constructor(token) {
-    this.bot = new Telegraf(token)
+    this.bot = new Telegraf(token, {
+      telegram: {
+        apiRoot: 'http://127.0.0.1:8081'
+      }
+    })
   }
 
   runBot = async () => {
+    this.#registerMiddlewares()
     this.#registerCommands()
 
     process.once('SIGINT', () => this.bot.stop('SIGINT'))
@@ -37,11 +46,71 @@ class Bot {
     await this.bot.launch()
   }
 
+  #registerMiddlewares = () => {
+    this.bot.use(mediaGroup())
+  }
+
   #registerCommands = () => {
     this.bot.command('last', this.#getLastNAlbums)
     this.bot.command('post', this.#getAlbumById)
     this.bot.command('discography', this.#getDiscographyById)
+    this.bot.on('media_group', this.#parseForwardedMessage)
     this.bot.on(message('text'), this.#parseInput)
+  }
+
+  #parseForwardedMessage = async (ctx) => {
+    if (ctx.update.message.document) {
+      const fileId = ctx.update.message.document.file_id
+      const downloadLink = await this.bot.telegram.getFileLink(fileId)
+      const artistName = this.#extractArtistName(ctx.update.message.document.file_name)
+      await this.#unpack(ctx, downloadLink.pathname, `${MUSIC_PATH}/${artistName}`)
+    } else if (ctx.mediaGroup) {
+      for (const message of ctx.mediaGroup) {
+        const fileId = message.audio.file_id
+        const fileName = message.audio.file_name
+        const downloadLink = await this.bot.telegram.getFileLink(fileId)
+        const filepath = downloadLink.pathname
+        const tags = await parseFile(filepath, {skipCovers: true})
+        const albumName = `${tags.common.year} - ${tags.common.album}`
+        const artistName = message.audio.performer
+        let distFilepath = `${DOWNLOAD_DIR_PATH}/${artistName}/${fileName}`
+
+        if (albumName) {
+          distFilepath = `${MUSIC_PATH}/${artistName}/${albumName}/${fileName}`
+        }
+        
+        this.#checkArtistExist(artistName)
+        await cp(filepath, distFilepath)
+        await unlink(filepath)
+      }
+      await this.#downloadComplete(ctx)
+    }
+  }
+
+  #extractArtistName = (filename) => {
+    // Удаляем расширение файла
+    const baseName = filename.replace(/\.[^/.]+$/, '');
+    
+    // Проверяем распространенные разделители с пробелами и тире
+    const commonSeparators = [/\s-\s/, /\s–\s/, /\s—\s/];
+    for (const sep of commonSeparators) {
+        const splitIndex = baseName.search(sep);
+        if (splitIndex !== -1) {
+            return baseName.substring(0, splitIndex).trim();
+        }
+    }
+    
+    // Проверяем другие разделители: "_", "(", "[", пробел и тире
+    const otherSeparators = [/_/, /\(/, /\[/, /\s-\s?/, /-/];
+    for (const sep of otherSeparators) {
+        const splitIndex = baseName.search(sep);
+        if (splitIndex !== -1) {
+            return baseName.substring(0, splitIndex).trim();
+        }
+    }
+    
+    // Если разделителей нет, возвращаем исходное имя
+    return baseName.trim();
   }
 
   #getDiscographyById = async (ctx) => {
@@ -76,7 +145,13 @@ class Bot {
           year: a.year,
           genre: a.Genre.map(g => g.tag),
           url: `${WEB_URL}/details?key=/library/metadata/${a.ratingKey}`,
-          type: a.title.includes('EP') ? ALBUM_TYPES.EP : (a.title.includes('Single')) ? ALBUM_TYPES.Single : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo : (a.title.includes('Remix')) ? ALBUM_TYPES.Remixes : ALBUM_TYPES['Full-Lenght']
+          type: a.title.includes('EP') ? ALBUM_TYPES.EP
+           : (a.title.includes('Single')) ? ALBUM_TYPES.Single
+           : (a.title.includes('Demo')) ? ALBUM_TYPES.Demo 
+           : (a.title.includes('Live')) ? ALBUM_TYPES.Live
+           : (a.title.includes('Instrument')) ? ALBUM_TYPES.Instrumental
+           : (a.title.includes('Remix')) ? ALBUM_TYPES.Remixes
+           : ALBUM_TYPES['Full-Lenght']
         }
       })
     }
@@ -145,6 +220,7 @@ class Bot {
     switch (fileExtension) {
       case '7z':
       case 'tar':
+      case 'zip':
         const myStream = Seven.extractFull(filepath, outputPath)
         myStream.on('end', async () => {
           await this.#unpackComplete(ctx, filepath, outputPath)
@@ -180,12 +256,19 @@ class Bot {
     // await this.#getLastNAlbums(ctx)
   }
 
+  #downloadComplete = async (ctx) => {
+    ctx.reply('Файлы скачаны')
+    await xhr.get(`${API_URL}/library/sections/1/refresh`)
+  }
+
   #postDiscographyToChannel = async (ctx, discography) => {
     const fullLenghtAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES['Full-Lenght'])
     const epAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.EP)
     const singlesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Single)
     const demoAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Demo)
+    const liveAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Live)
     const remixesAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Remixes)
+    const instrumentalAlbums = discography.albums.filter(a => a.type === ALBUM_TYPES.Instrumental)
 
     let caption =
 `
@@ -216,9 +299,24 @@ ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
 ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
+
+    if (liveAlbums.length) caption +=
+`
+Live: ${liveAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+
     if (remixesAlbums.length) caption +=
 `
 Ремиксы: ${remixesAlbums.map((a, index) =>
+`
+${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
+`
+
+    if (instrumentalAlbums.length) caption +=
+`
+Инструментал: ${instrumentalAlbums.map((a, index) =>
 `
 ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
 `
