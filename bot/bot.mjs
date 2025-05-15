@@ -55,17 +55,19 @@ class Bot {
     this.bot.command('post', this.#getAlbumById)
     this.bot.command('discography', this.#getDiscographyById)
     this.bot.on('media_group', this.#parseForwardedMessage)
+    this.bot.on('document', this.#parseArchive)
     this.bot.on(message('text'), this.#parseInput)
   }
 
+  #parseArchive = async (ctx) => {
+    const fileId = ctx.update.message.document.file_id
+    const downloadLink = await this.bot.telegram.getFileLink(fileId)
+    const artistName = this.#extractArtistName(ctx.update.message.document.file_name)
+    await this.#unpack(ctx, downloadLink.pathname, `${MUSIC_PATH}/${artistName}`)
+  }
+
   #parseForwardedMessage = async (ctx) => {
-    if (ctx.update.message.document) {
-      const fileId = ctx.update.message.document.file_id
-      const downloadLink = await this.bot.telegram.getFileLink(fileId)
-      const artistName = this.#extractArtistName(ctx.update.message.document.file_name)
-      await this.#unpack(ctx, downloadLink.pathname, `${MUSIC_PATH}/${artistName}`)
-    } else if (ctx.mediaGroup) {
-      for (const message of ctx.mediaGroup) {
+    for (const message of ctx.mediaGroup) {
         const fileId = message.audio.file_id
         const fileName = message.audio.file_name
         const downloadLink = await this.bot.telegram.getFileLink(fileId)
@@ -82,9 +84,8 @@ class Bot {
         this.#checkArtistExist(artistName)
         await cp(filepath, distFilepath)
         await unlink(filepath)
-      }
-      await this.#downloadComplete(ctx)
     }
+    await this.#downloadComplete(ctx)
   }
 
   #extractArtistName = (filename) => {
