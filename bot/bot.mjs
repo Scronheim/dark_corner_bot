@@ -15,7 +15,7 @@ const DOWNLOAD_DIR_PATH = '/mnt/data/deluge/downloads'
 
 const API_URL = process.env.API_URL
 const API_KEY = process.env.API_KEY
-const WEB_URL = 'https://dark-corner.ru/web/index.html#!/server/2f5e25f41be9faf84718898e3b35e46a0df60d89'
+const WEB_URL = 'https://dark-corner.ru/web/index.html#!/server/b7b1b44bf93bed318ee81ff4ab60d9642f687193'
 
 const xhr = axios.create({
   baseURL: API_URL,
@@ -54,19 +54,19 @@ class Bot {
     this.bot.command('last', this.#getLastNAlbums)
     this.bot.command('post', this.#getAlbumById)
     this.bot.command('discography', this.#getDiscographyById)
-    this.bot.on('media_group', this.#parseForwardedMessage)
-    this.bot.on('document', this.#parseArchive)
-    this.bot.on(message('text'), this.#parseInput)
+    this.bot.on('media_group', this.#parseMediaGroup)
+    this.bot.on('document', this.#parseDocument)
+    this.bot.on(message('text'), this.#parseText)
   }
 
-  #parseArchive = async (ctx) => {
+  #parseDocument = async (ctx) => {
     const fileId = ctx.update.message.document.file_id
     const downloadLink = await this.bot.telegram.getFileLink(fileId)
     const artistName = this.#extractArtistName(ctx.update.message.document.file_name)
     await this.#unpack(ctx, downloadLink.pathname, `${MUSIC_PATH}/${artistName}`)
   }
 
-  #parseForwardedMessage = async (ctx) => {
+  #parseMediaGroup = async (ctx) => {
     for (const message of ctx.mediaGroup) {
         const fileId = message.audio.file_id
         const fileName = message.audio.file_name
@@ -177,7 +177,7 @@ class Bot {
     }
   }
 
-  #parseInput = async (ctx) => {
+  #parseText = async (ctx) => {
     // грузим архив напрямую, формат artist__download url
     const splittedInput = ctx.update.message.text.split('__')
     const firstArgument = splittedInput[0]
@@ -328,7 +328,7 @@ ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
   }
 
   #postAlbumToChannel = async (ctx, albumInfo) => {
-    ctx.telegram.sendPhoto('@dark_corner_ru', {url: albumInfo.coverUrl}, {caption: // 423754317   @dark_corner_ru
+    ctx.telegram.sendPhoto('423754317', {url: albumInfo.coverUrl}, {caption: // 423754317   @dark_corner_ru
 `
 <a href="${albumInfo.artistUrl}">${albumInfo.artist}</a> - <a href="${albumInfo.albumUrl}">${albumInfo.album}</a> (${albumInfo.year})
 
