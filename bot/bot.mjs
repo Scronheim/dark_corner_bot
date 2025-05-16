@@ -17,7 +17,7 @@ const DOWNLOAD_DIR_PATH = '/mnt/data/deluge/downloads'
 const API_URL = process.env.API_URL
 const API_KEY = process.env.API_KEY
 const WEB_URL = 'https://dark-corner.ru/web/index.html#!/server/b7b1b44bf93bed318ee81ff4ab60d9642f687193'
-const CHANNEL_ID = '423754317' //423754317, @dark_corner_ru
+const CHANNEL_ID = '@dark_corner_ru' //423754317, @dark_corner_ru
 
 const xhr = axios.create({
   baseURL: API_URL,
@@ -129,7 +129,7 @@ class Bot {
     const tracksResponse = await xhr.get(`/library/metadata/${ctx.payload}/children`)
     const album = response.data.MediaContainer.Metadata[0]
     album.tracks = tracksResponse.data.MediaContainer.Metadata
-    this.#prepareAlbums(ctx, [album])
+    await this.#prepareAlbums(ctx, [album])
   }
 
   #getLastNAlbums = async (ctx) => {
@@ -142,7 +142,7 @@ class Bot {
       albumsPayload.push(album)
     }
 
-    this.#prepareAlbums(ctx, albumsPayload)
+    await this.#prepareAlbums(ctx, albumsPayload)
   }
 
   #prepareDiscography = async (ctx, artist, albums) => {
