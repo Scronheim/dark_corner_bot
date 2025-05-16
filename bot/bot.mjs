@@ -1,12 +1,13 @@
 import fs from 'fs'
 import { readdir, cp, unlink } from 'fs/promises'
 import { Telegraf } from 'telegraf'
-import { message, anyOf } from 'telegraf/filters'
+import { message } from 'telegraf/filters'
 import axios from 'axios'
 import Seven from 'node-7z'
 import { createExtractorFromFile } from 'node-unrar-js'
 import { parseFile } from 'music-metadata'
 import mediaGroup from 'telegraf-media-group'
+import { chunk } from 'lodash-es'
 
 import { ALBUM_TYPES } from './consts.mjs'
 
@@ -16,6 +17,7 @@ const DOWNLOAD_DIR_PATH = '/mnt/data/deluge/downloads'
 const API_URL = process.env.API_URL
 const API_KEY = process.env.API_KEY
 const WEB_URL = 'https://dark-corner.ru/web/index.html#!/server/b7b1b44bf93bed318ee81ff4ab60d9642f687193'
+const CHANNEL_ID = '423754317' //423754317, @dark_corner_ru
 
 const xhr = axios.create({
   baseURL: API_URL,
@@ -124,13 +126,23 @@ class Bot {
 
   #getAlbumById = async (ctx) => {
     const response = await xhr.get(`/library/metadata/${ctx.payload}`)
-    this.#prepareAlbums(ctx, response.data.MediaContainer.Metadata)
+    const tracksResponse = await xhr.get(`/library/metadata/${ctx.payload}/children`)
+    const album = response.data.MediaContainer.Metadata[0]
+    album.tracks = tracksResponse.data.MediaContainer.Metadata
+    this.#prepareAlbums(ctx, [album])
   }
 
   #getLastNAlbums = async (ctx) => {
     const limit = ctx.payload ? ctx.payload : 1
     const response = await xhr.get(`/library/recentlyAdded?limit=${limit}`)
-    this.#prepareAlbums(ctx, response.data.MediaContainer.Metadata)
+    const albumsPayload = []
+    for (const album of response.data.MediaContainer.Metadata) {
+      const tracksResponse = await xhr.get(`/library/metadata/${album.ratingKey}/children`)
+      album.tracks = tracksResponse.data.MediaContainer.Metadata
+      albumsPayload.push(album)
+    }
+
+    this.#prepareAlbums(ctx, albumsPayload)
   }
 
   #prepareDiscography = async (ctx, artist, albums) => {
@@ -162,12 +174,15 @@ class Bot {
   #prepareAlbums = async (ctx, albums) => {
     for (const album of albums) {
       const artistInfo = await xhr.get(`/library/sections/1/all?title=${album.parentTitle}`)
+      const country = artistInfo.data.MediaContainer.Metadata[0].Country ? artistInfo.data.MediaContainer.Metadata[0].Country[0].tag : 'Неизвестно'
+      const genres = album.Genre ? album.Genre.map(g => g.tag).join(' / ') : 'Не указан'
       const albumInfo = {
         artist: album.parentTitle,
-        artistCountry: artistInfo.data.MediaContainer.Metadata[0].Country[0].tag,
+        artistCountry: country,
         album: album.title,
+        tracks: album.tracks,
         year: album.year,
-        genres: album.Genre,
+        genres,
         parentKey: album.parentKey,
         artistUrl: `${WEB_URL}/details?key=/library/metadata/${album.parentRatingKey}`,
         albumUrl: `${WEB_URL}/details?key=/library/metadata/${album.ratingKey}`,
@@ -328,16 +343,30 @@ ${index + 1}. <a href="${a.url}">${a.title}</a> (${a.year})`).join('')}
   }
 
   #postAlbumToChannel = async (ctx, albumInfo) => {
-    ctx.telegram.sendPhoto('423754317', { url: albumInfo.coverUrl }, {
-      caption: // 423754317   @dark_corner_ru
+    await ctx.telegram.sendPhoto(CHANNEL_ID, { url: albumInfo.coverUrl }, {
+      caption:
         `
 <a href="${albumInfo.artistUrl}">${albumInfo.artist}</a> - <a href="${albumInfo.albumUrl}">${albumInfo.album}</a> (${albumInfo.year})
 
-Жанр(ы): ${albumInfo.genres.map(g => g.tag).join(' / ')}
+Жанр(ы): ${albumInfo.genres}
 Страна: ${albumInfo.artistCountry}
 `,
       parse_mode: 'HTML'
     })
+    const chunkedTracks = chunk(albumInfo.tracks, 10)
+    for (const chunk of chunkedTracks) {
+      const mediaGroup = chunk.map(track => {
+        return {
+          type: 'audio',
+          media: { source: track.Media[0].Part[0].file.replace('/music', '/mnt/data/music') },
+          performer: track.grandparentTitle,
+          title: track.title,
+          thumbnail: { url: albumInfo.coverUrl },
+          duration: +(track.duration / 1000).toFixed(),
+        }
+      })
+      await ctx.telegram.sendMediaGroup(CHANNEL_ID, mediaGroup, { disable_notification: true })
+    }
   }
 
   #sanitizeText = (text) => {
